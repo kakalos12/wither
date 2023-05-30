@@ -9,6 +9,7 @@ use mongodb::bson::{Bson, Document};
 use mongodb::options;
 use mongodb::results::DeleteResult;
 use mongodb::{Collection, Database};
+use mongodb::results::UpdateResult;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::common::IndexModel;
@@ -256,6 +257,13 @@ where
             .ok_or(WitherError::ServerFailedToReturnUpdatedDoc)?)
     }
 
+    async fn update_many<U,O>(db : &Database, query : Document, update: U, options: O) -> Result<UpdateResult>
+    where
+        U:  Into<options::UpdateModifications> + Send,
+        O: Into<Option<options::UpdateOptions>> + Send,
+    {
+        Ok(Self::collection(db).update_many(query, update , options).await?)
+    }
     /// Delete this model instance by ID.
     ///
     /// Wraps the driver's `Collection.delete_one` method.
