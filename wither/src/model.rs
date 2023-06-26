@@ -3,13 +3,14 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use futures::TryStreamExt;
 use mongodb::bson::oid::ObjectId;
 use mongodb::bson::{doc, from_bson, to_bson};
 use mongodb::bson::{Bson, Document};
 use mongodb::options;
 use mongodb::results::DeleteResult;
-use mongodb::{Collection, Database};
 use mongodb::results::UpdateResult;
+use mongodb::{Collection, Database};
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::common::IndexModel;
@@ -108,6 +109,20 @@ where
         Ok(Self::collection(db).find_one(filter, options).await?)
     }
 
+    async fn find_by_id(db: &Database, id: &ObjectId) -> Result<Option<Self>> {
+        Ok(Self::collection(db).find_one(doc! {"_id" : id}, None).await?)
+    }
+
+    async fn find_all(db: &Database) -> Result<Vec<Self>> {
+        Ok(Self::find(db, None, None)
+            .await?
+            .try_collect()
+            .await
+            .unwrap_or_else(|_| vec![])
+            .into_iter()
+            .collect())
+    }
+
     /// Finds a single document and deletes it, returning the original.
     async fn find_one_and_delete<O>(db: &Database, filter: Document, options: O) -> Result<Option<Self>>
     where
@@ -166,7 +181,7 @@ where
             (Some(id), _) => doc! {"_id": id},
             (None, None) => {
                 let new_id = ObjectId::new();
-                self.set_id(new_id);
+                id_needs_update = true;
                 doc! {"_id": new_id}
             }
             (None, Some(filter)) => {
@@ -174,7 +189,6 @@ where
                 filter
             }
         };
-
         // Save the record by replacing it entirely, or upserting if it doesn't already exist.
         let opts = options::FindOneAndReplaceOptions::builder()
             .upsert(Some(true))
@@ -186,7 +200,6 @@ where
             .await?
             .ok_or(WitherError::ServerFailedToReturnUpdatedDoc)?;
         let updated_doc = Self::document_from_instance(&updated_doc)?;
-
         // Update instance ID if needed.
         if id_needs_update {
             let response_id = updated_doc
@@ -257,12 +270,24 @@ where
             .ok_or(WitherError::ServerFailedToReturnUpdatedDoc)?)
     }
 
-    async fn update_many<U,O>(db : &Database, query : Document, update: U, options: O) -> Result<UpdateResult>
+    async fn update_many<U, O>(db: &Database, query: Document, update: U, options: O) -> Result<UpdateResult>
     where
-        U:  Into<options::UpdateModifications> + Send,
+        U: Into<options::UpdateModifications> + Send,
         O: Into<Option<options::UpdateOptions>> + Send,
     {
-        Ok(Self::collection(db).update_many(query, update , options).await?)
+        Ok(Self::collection(db).update_many(query, update, options).await?)
+    }
+
+    async fn aggregate<P, O>(db: &Database, pipeline: P, options: O) -> Result<ModelCursor<Self>>
+    where
+        P: IntoIterator<Item = Document> + Send,
+        O: Into<Option<options::AggregateOptions>> + Send,
+    {
+        Ok(Self::collection(db)
+            .aggregate(pipeline, options)
+            .await
+            .map(|c| c.with_type::<Self>())
+            .map(ModelCursor::new)?)
     }
     /// Delete this model instance by ID.
     ///
